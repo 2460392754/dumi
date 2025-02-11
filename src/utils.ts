@@ -1,16 +1,24 @@
+import type { Range, RangeOptions } from '@umijs/utils/compiled/semver';
+import { createHash } from 'crypto';
 import Cache from 'file-system-cache';
 import fs from 'fs';
 import yaml from 'js-yaml';
 import path from 'path';
-import { lodash, logger, resolve, winPath } from 'umi/plugin-utils';
-
+import { lodash, logger, semver, winPath } from 'umi/plugin-utils';
+import { promisify } from 'util';
+import type {
+  RunLoaderOption as InternalRunLoaderOption,
+  RunLoaderResult,
+} from '../compiled/loader-runner';
+import { runLoaders as callbackRunLoaders } from '../compiled/loader-runner';
+import { FS_CACHE_DIR } from './constants';
+export type * from '../compiled/loader-runner';
+export { getContext } from '../compiled/loader-runner';
 /**
  * get route path from file-system path
  */
-export function getRoutePathFromFsPath(fsPath: string) {
-  return lodash.kebabCase(
-    winPath(fsPath).replace(/((\/|^)index(\.[a-zA-Z-]+)?)?\.\w+$/g, ''),
-  );
+export function getFileIdFromFsPath(fsPath: string) {
+  return lodash.kebabCase(winPath(fsPath).replace(/((\/|^)index)?\.\w+$/g, ''));
 }
 
 /**
@@ -56,18 +64,19 @@ Error: ${err}`);
 };
 
 /**
- * parse frontmatter from code string
+ * parse frontmatter from code string,
+ * also supports html/xml comments
  */
 export function parseCodeFrontmatter(raw: string) {
   const [, comment = '', code = ''] = raw
     // clear head break lines
     .replace(/^\n\s*/, '')
     // split head comments & remaining code
-    .match(/^(\/\*\*[^]*?\n\s*\*\/)?(?:\s|\n)*([^]+)?$/)!;
+    .match(/^(\/\*\*[^]*?\n\s*\*\/|<!--[^]*?\n\s*-->)?(?:\s|\n)*([^]+)?$/)!;
 
   const yamlComment = comment
     // clear / from head & foot for comment
-    .replace(/^\/|\/$/g, '')
+    .replace(/^(\/|<!--)|(\/|-->)$/g, '')
     // remove * from comments
     .replace(/(^|\n)\s*\*+/g, '$1');
   let frontmatter: Record<string, any> | null = null;
@@ -82,14 +91,17 @@ export function parseCodeFrontmatter(raw: string) {
 /**
  * get file-system cache for specific namespace
  */
+let cacheDir = FS_CACHE_DIR;
 const caches: Record<string, ReturnType<typeof Cache>> = {};
-const CACHE_PATH = 'node_modules/.cache/dumi';
-export function getCache(ns: string): typeof caches['0'] {
+export function _setFSCacheDir(dir: string) {
+  cacheDir = dir;
+}
+export function getCache(ns: string): (typeof caches)['0'] {
   // return fake cache if cache disabled
   if (process.env.DUMI_CACHE === 'none') {
     return { set() {}, get() {}, setSync() {}, getSync() {} } as any;
   }
-  return (caches[ns] ??= Cache({ basePath: path.join(CACHE_PATH, ns) }));
+  return (caches[ns] ??= Cache({ basePath: path.resolve(cacheDir, ns) }));
 }
 
 /**
@@ -159,24 +171,104 @@ export function getProjectRoot(cwd: string) {
   return winPath(cwd);
 }
 
+function lastSlash(str: string) {
+  return str[str.length - 1] === '/' ? str : `${str}/`;
+}
+
 /**
- * get dumi client dist file and preserve symlink(pnpm, tnpm & etc.) to make chunk name clean
+ *
+ * transform component into webpack chunkName
+ * @export
+ * @param {string} component component path
+ * @param {string} [cwdPath] current root path
+ * @return {*}  {string}
  */
-export function getClientDistFile(file: string, cwd: string) {
-  let clientFile: string;
+export function componentToChunkName(
+  component: string,
+  cwdPath: string = '/',
+): string {
+  const cwd = winPath(cwdPath);
 
-  try {
-    // why use `resolve`?
-    // because `require.resolve` will use the final path of symlink file
-    // and in tnpm or pnpm project, the long realpath make chunk name unexpected
-    clientFile = resolve.sync(`dumi/${file}`, {
-      basedir: cwd,
-      preserveSymlinks: true,
-    });
-  } catch {
-    // fallback to use `require.resolve`, for dumi self docs & examples
-    clientFile = require.resolve(`../${file}`);
+  return typeof component === 'string'
+    ? winPath(component)
+        .replace(
+          new RegExp(
+            `^(${
+              // match app cwd first
+              lodash.escapeRegExp(lastSlash(cwd))
+            })`,
+          ),
+          '',
+        )
+        .replace(/^.(\/|\\)/, '')
+        .replace(/(\/|\\)/g, '__')
+        .replace(/^src__/, '')
+        .replace(/\.\.__/g, '')
+        .replace(/^pages__/, 'p__')
+    : '';
+}
+
+export function generateMetaChunkName(
+  path: string,
+  cwd: string,
+  locales: string[] = [],
+): string {
+  const chunkName = componentToChunkName(path, cwd);
+
+  const dir = chunkName.replace(/^(.*?)_.*/, '$1');
+
+  const localeRegExp = new RegExp(`.*(${locales.join('|')}).*`);
+  const ifLocale = locales.length && localeRegExp.test(chunkName);
+  const locale = ifLocale ? `__${chunkName.replace(localeRegExp, '$1')}` : '';
+
+  return `meta__${dir}${locale}`;
+}
+
+/**
+ * generate hash for string
+ */
+export function getContentHash(content: string, length = 8) {
+  return createHash('md5').update(content).digest('hex').slice(0, length);
+}
+
+const promisifyRunLoaders = promisify(callbackRunLoaders);
+
+export type RunLoaderOption = Partial<InternalRunLoaderOption>;
+
+export function runLoaders(options: RunLoaderOption): Promise<RunLoaderResult>;
+export function runLoaders(
+  options: RunLoaderOption,
+  callback: undefined,
+): Promise<RunLoaderResult>;
+export function runLoaders(
+  options: RunLoaderOption,
+  callback: (err: NodeJS.ErrnoException | null, result: RunLoaderResult) => any,
+): void;
+export function runLoaders(
+  options: RunLoaderOption,
+  callback?: (
+    err: NodeJS.ErrnoException | null,
+    result: RunLoaderResult,
+  ) => any,
+) {
+  if (callback !== undefined) {
+    return callbackRunLoaders(options as InternalRunLoaderOption, callback);
   }
-
-  return winPath(clientFile);
+  return promisifyRunLoaders(options as InternalRunLoaderOption);
+}
+/**
+ * check if version is in range
+ */
+export function isVersionInRange(
+  version: string,
+  range: string | Range,
+  options: RangeOptions = { includePrerelease: true },
+) {
+  if (semver.valid(version)) {
+    return semver.satisfies(version, range, options);
+  }
+  if (semver.validRange(version)) {
+    return semver.subset(version, range, options);
+  }
+  return false;
 }

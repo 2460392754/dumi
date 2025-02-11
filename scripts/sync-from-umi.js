@@ -1,34 +1,24 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const http = require('http');
 
 const UMI_DOC_DIR = path.join(__dirname, '..', 'docs', '.upstream');
-const REPLACE_MESSAGE_MDX = [
-  // remove mdx component import statements
-  { type: 'replace', value: [/^[^\r\n]+ from 'umi';\n*/, ''] },
-  // replace Message component
-  {
-    type: 'replace',
-    value: [
-      /<Message(?: type="[^"]+")? emoji="(?:🚨|⚠️)">([^]+?)<\/Message>/,
-      ':::warning$1:::',
-    ],
-  },
-  {
-    type: 'replace',
-    value: [
-      /<Message(?: type="[^"]+")? emoji="(💡|🚀)">([^]+?)<\/Message>/,
-      ':::info$1:::',
-    ],
-  },
-];
+const RM_FM_ACTION = {
+  type: 'replace',
+  value: [/^---[^]+?---\n/, ''],
+};
+
+const JSDELIVR_PREFIX = 'https://cdn.jsdelivr.net/gh/umijs/umi@4/';
+const GITHUB_RAW_PREFIX = 'https://raw.githubusercontent.com/umijs/umi/master/';
+
 const FILE_LIST = [
   // config docs
   {
     localname: 'config.md',
-    upstream: 'https://cdn.jsdelivr.net/gh/umijs/umi@4/docs/docs/api/config.md',
+    repoPath: 'docs/docs/docs/api/config.md',
     actions: [
-      ...REPLACE_MESSAGE_MDX,
+      RM_FM_ACTION,
       // remove head content
       { type: 'slice', value: [2] },
       // remove unnecessary option
@@ -42,7 +32,6 @@ const FILE_LIST = [
         'jsMinifier \\(vite 构建\\)',
         'mdx',
         'mpa',
-        'monorepoRedirect',
         'phantomDependency',
         'reactRouter5Compat',
         'vite',
@@ -54,6 +43,8 @@ const FILE_LIST = [
           '$1',
         ],
       })),
+      // remove h1
+      { type: 'replace', value: [/^#\s[^\r\n]+/, ''] },
       // replace h2 -> h3
       { type: 'replace', value: [/(\n?)##/g, '\n###'] },
       // replace jsx to jsx | pure
@@ -72,6 +63,11 @@ const FILE_LIST = [
       { type: 'replace', value: [/- `include` 仅在 `strategy[^\n]+\n/, ''] },
       // replace hash default
       { type: 'replace', value: [/(# hash[^]+?默认值：)`false`/g, '$1`true`'] },
+      // replace esbuildMinifyIIFE default
+      {
+        type: 'replace',
+        value: [/(# esbuildMinifyIIFE[^]+?默认值：)`false`/g, '$1`true`'],
+      },
       // replace exportStatic default
       {
         type: 'replace',
@@ -87,16 +83,14 @@ const FILE_LIST = [
       },
       // replace metas
       { type: 'replace', value: [/('|")umi, umijs/g, '$1dumi, base on umi'] },
-      // replace umi statement
-      {
-        type: 'replace',
-        value: [/(额外的|，|。|让|删除)(\s?)umi/gi, '$1$2dumi'],
-      },
       // replace umi config
       { type: 'replace', value: [/\.umirc/g, '.dumirc'] },
       // replace umi word
-      { type: 'replace', value: [/('|`|\s)umi/gi, '$1dumi'] },
       { type: 'replace', value: [/umi 4/gi, 'dumi'] },
+      {
+        type: 'replace',
+        value: [/(额外的|，|。|让|删除|'|`|[^-]\s)umi/gi, '$1dumi'],
+      },
       // replace same page url
       {
         type: 'replace',
@@ -162,9 +156,9 @@ const FILE_LIST = [
   },
   {
     localname: 'api.md',
-    upstream: 'https://cdn.jsdelivr.net/gh/umijs/umi@4/docs/docs/api/api.md',
+    repoPath: 'docs/docs/docs/api/api.md',
     actions: [
-      ...REPLACE_MESSAGE_MDX,
+      RM_FM_ACTION,
       // remove head content
       { type: 'slice', value: [6] },
       { type: 'replace', value: ['{\n/*\n', ''] },
@@ -186,10 +180,9 @@ const FILE_LIST = [
   },
   {
     localname: 'plugin.md',
-    upstream:
-      'https://cdn.jsdelivr.net/gh/umijs/umi@4/docs/docs/guides/plugins.md',
+    repoPath: 'docs/docs/docs/guides/plugins.md',
     actions: [
-      ...REPLACE_MESSAGE_MDX,
+      RM_FM_ACTION,
       // remove head content
       { type: 'slice', value: [1] },
       { type: 'replace', value: ['Umi 的核心就在于它的插件机制。', ''] },
@@ -212,9 +205,9 @@ const FILE_LIST = [
   },
   {
     localname: 'plugin-api.md',
-    upstream:
-      'https://cdn.jsdelivr.net/gh/umijs/umi@4/docs/docs/api/plugin-api.md',
+    repoPath: 'docs/docs/docs/api/plugin-api.md',
     actions: [
+      RM_FM_ACTION,
       // remove head content
       { type: 'slice', value: [6] },
       // remove unnecessary section
@@ -249,7 +242,83 @@ const FILE_LIST = [
       // },
     ],
   },
-];
+  {
+    localname: 'runtime-config.md',
+    repoPath: 'docs/docs/docs/api/runtime-config.md',
+    actions: [
+      RM_FM_ACTION,
+      // replace jsx to jsx | pure
+      { type: 'replace', value: [/\n```(jsx|tsx)\s*\n/g, '\n```$1 | pure\n'] },
+      // replace umi to dumi
+      { type: 'replace', value: [/('|"|\s)umi/g, '$1dumi'] },
+      { type: 'replace', value: ['src/app.tsx', '.dumi/app.(js|ts|jsx|tsx)'] },
+      // mark runtime config intro
+      {
+        type: 'replace',
+        value: [/(# 运行时配置\s)/, '$1<!-- runtime config intro -->'],
+      },
+      {
+        type: 'replace',
+        value: [/(\s## 配置项)/, '<!-- runtime config intro end -->$1'],
+      },
+      // mark runtime config core
+      {
+        type: 'replace',
+        value: [/(\s### onRouteChange)/, '<!-- runtime config core -->$1'],
+      },
+      {
+        type: 'replace',
+        value: [/(\s### qiankun)/, '\n<!-- runtime config core end -->$1'],
+      },
+      // remove useless line break
+      {
+        type: 'replace',
+        value: ['\n- `routeComponents`', '- `routeComponents`'],
+      },
+      // replace @/extraRoutes to ./extraRoutes
+      { type: 'replace', value: [/@(\/extraRoutes)/g, '.$1'] },
+      // remove args from title
+      { type: 'replace', value: [/(#+\s\w+)\([^)]+\)/g, '$1'] },
+      // remove HashAnchorCompat
+      // ref: https://github.com/umijs/umi/blob/8bfd4c761b3cc6209b9203c705842568c3ccbe62/docs/docs/docs/api/runtime-config.md#L183
+      {
+        type: 'replace',
+        value: [/<HashAnchorCompat.+?<\/HashAnchorCompat>\n/g, ''],
+      },
+    ],
+  },
+  {
+    localname: 'env-config.md',
+    repoPath: 'docs/docs/docs/guides/env-variables.md',
+    actions: [
+      RM_FM_ACTION,
+      // remove head content
+      { type: 'slice', value: [1] },
+      // remove unnecessary section
+      ...['DID_YOU_KNOW'].map((option) => ({
+        type: 'replace',
+        value: [new RegExp(`(?:^|[\r\n])### ${option}[^]+?([\r\n]#|$)`), '$1'],
+      })),
+      // replace umi to dumi
+      { type: 'replace', value: [/UMI/g, 'DUMI'] },
+      { type: 'replace', value: [/('|"|\s|`|&)umi/gi, '$1dumi'] },
+      // replace BABEL_CACHE to DUMI_CACHE
+      { type: 'replace', value: [/BABEL_CACHE/g, 'DUMI_CACHE'] },
+      { type: 'replace', value: [/\sbabel\s/g, ' dumi '] },
+      // replace config to .dumirc
+      { type: 'replace', value: [/config\./g, '.dumirc.'] },
+    ],
+  },
+].map((file) => {
+  const urlPrefix = [
+    // 可以完全自定义(也许是一个本地启动的服务) `SYNC_CUSTOM_UPSTREAM=http://127.0.0.1:8080/ npm run docs:sync`
+    process.env.SYNC_CUSTOM_UPSTREAM,
+    // 同步遇到 443 失败时, 可以尝试 `SYNC_USE_GITHUB=1 npm run docs:sync` 使用 GitHub 作为源
+    process.env.SYNC_USE_GITHUB && GITHUB_RAW_PREFIX,
+    JSDELIVR_PREFIX,
+  ].find(Boolean);
+  return { ...file, upstream: `${urlPrefix}${file.repoPath}` };
+});
 
 if (!fs.existsSync(UMI_DOC_DIR)) {
   fs.mkdirSync(UMI_DOC_DIR);
@@ -259,8 +328,10 @@ if (!fs.existsSync(UMI_DOC_DIR)) {
 FILE_LIST.forEach((file) => {
   const localPath = path.join(UMI_DOC_DIR, file.localname);
 
+  const protocol = file.upstream.startsWith('https') ? https : http;
+
   // get file from upstream
-  https.get(file.upstream, (res) => {
+  protocol.get(file.upstream, (res) => {
     let content = '';
 
     res.setEncoding('utf8');
@@ -288,7 +359,11 @@ FILE_LIST.forEach((file) => {
 
       // write back to file
       fs.writeFileSync(localPath, content);
-      console.log('sync', file.localname, 'from upstream successfully!');
+      console.log(
+        `🔁 ${file.upstream} -> ${path.relative(process.cwd(), localPath)} [${(
+          content.length / 1024
+        ).toFixed(2)}KB]`,
+      );
     });
   });
 });

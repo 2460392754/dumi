@@ -1,6 +1,5 @@
 import { SP_ROUTE_PREFIX } from '@/constants';
 import type { IApi } from '@/types';
-import { getClientDistFile } from '@/utils';
 import { getConventionRoutes } from '@umijs/core';
 import { createRouteId } from '@umijs/core/dist/route/utils';
 import path from 'path';
@@ -48,7 +47,7 @@ function localizeUmiRoute(
     (locale) =>
       route.path.endsWith(`/${locale.id}`) &&
       // avoid locale id conflict with folder/file name
-      path.parse(route.file).name.endsWith(`.${locale.id}`),
+      path.parse(route.file!).name.endsWith(`.${locale.id}`),
   );
   const format = forceKebabCase ? kebabCaseRoutePath : (str: string) => str;
 
@@ -91,21 +90,19 @@ function flatRoute(route: IRoute, docLayoutId: string) {
 }
 
 export default (api: IApi) => {
-  const extraWatchPaths = [
-    ...(api.userConfig.resolve?.atomDirs || []),
-    ...(api.userConfig.resolve?.docDirs?.map(normalizeDocDir) || [
-      { dir: 'docs' },
-    ]),
-  ].map(({ dir }) => path.join(api.cwd, dir, '**/*.md'));
-
   api.describe({ key: 'dumi:routes' });
 
   // watch docs paths to re-generate routes
-  api.addTmpGenerateWatcherPaths(() => extraWatchPaths);
+  api.addTmpGenerateWatcherPaths(() =>
+    [
+      ...api.config.resolve.atomDirs,
+      ...api.config.resolve.docDirs.map(normalizeDocDir),
+    ].map(({ dir }) => path.join(api.cwd, dir, '**/*.md')),
+  );
 
-  // support to disable docDirs & atomDirs by empty array
-  // because the empty array will be ignored by config merge logic
   api.modifyDefaultConfig((memo) => {
+    // support to disable docDirs & atomDirs by empty array
+    // because the empty array will be ignored by config merge logic
     if (api.userConfig.resolve) {
       const keys: ['docDirs', 'atomDirs'] = ['docDirs', 'atomDirs'];
 
@@ -171,9 +168,12 @@ export default (api: IApi) => {
 
     // prepend page routes from .dumi/pages
     Object.entries(pages).forEach(([, route]) => {
-      route.file = winPath(
-        path.resolve(api.config.conventionRoutes!.base!, route.file),
-      );
+      const { base } = api.config.conventionRoutes as Exclude<
+        IApi['config']['conventionRoutes'],
+        false | undefined
+      >;
+
+      route.file = winPath(path.resolve(base!, route.file!));
 
       // save route
       routes[route.id] = route;
@@ -200,7 +200,7 @@ export default (api: IApi) => {
         }
 
         // use absolute path to avoid umi prefix with conventionRoutes.base
-        route.file = winPath(path.resolve(base, route.file));
+        route.file = winPath(path.resolve(base, route.file!));
 
         // save route
         routes[route.id] = route;
@@ -208,7 +208,7 @@ export default (api: IApi) => {
     });
 
     // generate atom routes
-    atomDirs.forEach(({ type, dir }) => {
+    atomDirs.forEach(({ type, subType = '', dir }) => {
       const base = path.join(api.cwd, dir);
       const atomFiles = glob.sync(
         '{*,*/index,*/index.*,*/README,*/README.*}.md',
@@ -216,7 +216,7 @@ export default (api: IApi) => {
       );
 
       atomFiles.forEach((file) => {
-        const routeFile = winPath(path.join(plural(type), file));
+        const routeFile = winPath(path.join(plural(type), subType, file));
         const routePath = routeFile
           .replace(/(\/index|\/README)?\.md$/, '')
           // like umi standard route
@@ -230,6 +230,7 @@ export default (api: IApi) => {
           absPath: `/${routePath}`,
           parentId: docLayoutId,
           file: winPath(path.resolve(base, file)),
+          meta: { _atom_route: true },
         };
       });
     });
@@ -262,7 +263,7 @@ export default (api: IApi) => {
         path: '*',
         absPath: '/*',
         parentId: docLayoutId,
-        file: getClientDistFile('dist/client/pages/404', api.cwd),
+        file: require.resolve('../client/pages/404'),
       };
     }
 
@@ -272,7 +273,7 @@ export default (api: IApi) => {
       path: `${SP_ROUTE_PREFIX}demos/:id`,
       absPath: `/${SP_ROUTE_PREFIX}demos/:id`,
       parentId: demoLayoutId,
-      file: getClientDistFile('dist/client/pages/Demo', api.cwd),
+      file: require.resolve('../client/pages/Demo'),
     };
 
     return routes;
@@ -283,7 +284,7 @@ export default (api: IApi) => {
     const layouts = [
       {
         id: CTX_LAYOUT_ID,
-        file: `${api.paths.absTmpPath}/dumi/theme/ContextWrapper.tsx`,
+        file: `${api.paths.absTmpPath!}/dumi/theme/ContextWrapper`,
       },
     ];
     const { GlobalLayout } = api.service.themeData.layouts;

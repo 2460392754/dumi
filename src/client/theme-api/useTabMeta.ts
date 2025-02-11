@@ -14,10 +14,10 @@ export const useTabQueryState = (): [string | null, (val?: string) => void] => {
 
       history.push({
         pathname,
-        search: params.toString(),
+        search: `?${params.toString()}`,
       });
     },
-    [params],
+    [params, pathname],
   );
 
   return [params.get(TAB_QUERY_KEY), setTabQueryState];

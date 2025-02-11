@@ -1,24 +1,58 @@
+import Tabs from '@/client/theme-default/slots/Tabs';
+import { ReactComponent as IconCheck } from '@ant-design/icons-svg/inline-svg/outlined/check.svg';
 import { ReactComponent as IconCodeSandbox } from '@ant-design/icons-svg/inline-svg/outlined/code-sandbox.svg';
-// import { ReactComponent as IconCodePen } from '@ant-design/icons-svg/inline-svg/outlined/codepen.svg';
+import { ReactComponent as IconEdit } from '@ant-design/icons-svg/inline-svg/outlined/edit.svg';
+import { ReactComponent as IconSketch } from '@ant-design/icons-svg/inline-svg/outlined/sketch.svg';
 import { ReactComponent as IconStackBlitz } from '@ant-design/icons-svg/inline-svg/outlined/thunderbolt.svg';
+import classNames from 'classnames';
+import copy from 'copy-to-clipboard';
 import {
+  getSketchJSON,
   openCodeSandbox,
   openStackBlitz,
+  useDemo,
   useIntl,
   type IPreviewerProps,
 } from 'dumi';
 import SourceCode from 'dumi/theme/builtins/SourceCode';
 import PreviewerActionsExtra from 'dumi/theme/slots/PreviewerActionsExtra';
-import Tabs from 'rc-tabs';
-import React, { useState, type FC } from 'react';
+import SourceCodeEditor from 'dumi/theme/slots/SourceCodeEditor';
+import RcTooltip from 'rc-tooltip';
+import type { TooltipProps as RcTooltipProps } from 'rc-tooltip/lib/Tooltip';
+import React, { useRef, useState, type FC, type ReactNode } from 'react';
 import './index.less';
+
+export interface TooltipProps extends Omit<RcTooltipProps, 'overlay'> {
+  placement?: 'top' | 'bottom';
+  title?: React.ReactNode;
+}
+
+const Tooltip: FC<TooltipProps> = (props) => {
+  const { title, placement = 'top', ...rest } = props;
+  return (
+    <RcTooltip
+      prefixCls="dumi-theme-default-tooltip"
+      placement={placement}
+      {...rest}
+      overlay={title}
+    />
+  );
+};
 
 export interface IPreviewerActionsProps extends IPreviewerProps {
   /**
    * disabled actions
    */
-  disabledActions?: ('CSB' | 'CODEPEN' | 'STACKBLITZ' | 'EXTERNAL')[];
+  disabledActions?: ('CSB' | 'STACKBLITZ' | 'EXTERNAL' | 'HTML2SKETCH')[];
+  extra?: ReactNode;
   forceShowCode?: boolean;
+  demoContainer: HTMLDivElement | HTMLIFrameElement;
+  onSourceTranspile?: (
+    args:
+      | { err: Error; source?: null }
+      | { err?: null; source: Record<string, string> },
+  ) => void;
+  onSourceChange?: (source: Record<string, string>) => void;
 }
 
 const IconCode: FC = () => (
@@ -45,10 +79,13 @@ const PreviewerActions: FC<IPreviewerActionsProps> = (props) => {
   const files = Object.entries(props.asset.dependencies).filter(
     ([, { type }]) => type === 'FILE',
   );
+  const { renderOpts } = useDemo(props.asset.id)!;
   const [activeKey, setActiveKey] = useState(0);
   const [showCode, setShowCode] = useState(
     props.forceShowCode || props.defaultShowCode,
   );
+  const copyTimer = useRef<number>();
+  const [isCopied, setIsCopied] = useState(false);
   const isSingleFile = files.length === 1;
   const lang = (files[activeKey][0].match(/\.([^.]+)$/)?.[1] || 'text') as any;
 
@@ -67,17 +104,6 @@ const PreviewerActions: FC<IPreviewerActionsProps> = (props) => {
             <IconCodeSandbox />
           </button>
         )}
-        {/* {!props.disabledActions?.includes('CODEPEN') && (
-          <button
-            className="dumi-default-previewer-action-btn"
-            type="button"
-            data-dumi-tooltip={intl.formatMessage({
-              id: 'previewer.actions.codepen',
-            })}
-          >
-            <IconCodePen />
-          </button>
-        )} */}
         {!props.disabledActions?.includes('STACKBLITZ') && (
           <button
             className="dumi-default-previewer-action-btn"
@@ -89,6 +115,60 @@ const PreviewerActions: FC<IPreviewerActionsProps> = (props) => {
           >
             <IconStackBlitz />
           </button>
+        )}
+        {!props.disabledActions?.includes('HTML2SKETCH') && getSketchJSON && (
+          <span
+            className="dumi-default-previewer-action-btn dumi-default-previewer-action-sketch"
+            data-dumi-tooltip={intl.formatMessage({
+              id: 'previewer.actions.sketch',
+            })}
+            data-copied={isCopied || undefined}
+          >
+            {isCopied ? <IconCheck /> : <IconSketch />}
+            <select
+              value=""
+              onChange={(ev) => {
+                const { value: type } = ev.target;
+
+                switch (type) {
+                  case 'group':
+                  case 'symbol':
+                    getSketchJSON(props.demoContainer, { type }).then(
+                      (data) => {
+                        copy(JSON.stringify(data));
+                        setIsCopied(true);
+                        clearTimeout(copyTimer.current);
+                        copyTimer.current = window.setTimeout(
+                          () => setIsCopied(false),
+                          2000,
+                        );
+                      },
+                    );
+                    break;
+
+                  case 'guide':
+                    window.open('https://d.umijs.org/config#html2sketch');
+                    break;
+
+                  default:
+                }
+              }}
+            >
+              <option value="" hidden></option>
+              <option value="group">
+                {intl.formatMessage({ id: 'previewer.actions.sketch.group' })}
+              </option>
+              <option value="symbol">
+                {intl.formatMessage({ id: 'previewer.actions.sketch.symbol' })}
+              </option>
+              <option value="-" disabled>
+                {intl.formatMessage({ id: 'previewer.actions.sketch.divider' })}
+              </option>
+              <option value="guide">
+                {intl.formatMessage({ id: 'previewer.actions.sketch.guide' })}
+              </option>
+            </select>
+          </span>
         )}
 
         {!props.disabledActions?.includes('EXTERNAL') && (
@@ -104,6 +184,7 @@ const PreviewerActions: FC<IPreviewerActionsProps> = (props) => {
             <IconExternalLink />
           </a>
         )}
+        {props.extra}
         <PreviewerActionsExtra {...props} />
         {!props.forceShowCode && (
           <button
@@ -121,21 +202,75 @@ const PreviewerActions: FC<IPreviewerActionsProps> = (props) => {
       {showCode && (
         <>
           <div className="dumi-default-previewer-sources">
-            {!isSingleFile && (
-              <Tabs
-                className="dumi-default-previewer-tabs"
-                prefixCls="dumi-default-tabs"
-                moreIcon="···"
-                defaultActiveKey={String(activeKey)}
-                onChange={(key) => setActiveKey(Number(key))}
-                items={files.map(([filename], i) => ({
-                  key: String(i),
-                  label: filename,
-                }))}
-              />
-            )}
+            <Tabs
+              className={classNames(
+                'dumi-default-previewer-tabs',
+                isSingleFile && 'dumi-default-previewer-tabs-single',
+              )}
+              defaultActiveKey={String(activeKey)}
+              onChange={(key) => setActiveKey(Number(key))}
+              items={files.map(([filename], i) => ({
+                key: String(i),
+                // remove leading ./ prefix
+                label: filename.replace(/^\.\//, ''),
+                // only support to edit entry file currently
+                children:
+                  i === 0 && renderOpts?.compile ? (
+                    <SourceCodeEditor
+                      lang={lang}
+                      initialValue={files[i][1].value.trim()}
+                      onChange={(code) => {
+                        props.onSourceChange?.({ [files[i][0]]: code });
+                        // FIXME: remove before publish
+                        props.onSourceTranspile?.({
+                          source: { [files[i][0]]: code },
+                        });
+                      }}
+                      extra={
+                        <Tooltip
+                          title={intl.formatMessage({
+                            id: 'previewer.actions.code.editable',
+                          })}
+                        >
+                          <button
+                            type="button"
+                            className="dumi-default-previewer-editor-tip-btn"
+                          >
+                            <IconEdit />
+                          </button>
+                        </Tooltip>
+                      }
+                    />
+                  ) : (
+                    <SourceCode
+                      lang={lang}
+                      extra={
+                        // only show readonly tip for non-entry files
+                        // because readonly entry file means live compile is not available for this demo tech stack
+                        i !== 0 && (
+                          <Tooltip
+                            title={intl.formatMessage({
+                              id: 'previewer.actions.code.readonly',
+                            })}
+                          >
+                            <button
+                              type="button"
+                              className="dumi-default-previewer-editor-tip-btn"
+                              data-readonly
+                            >
+                              <span></span>
+                              <IconEdit />
+                            </button>
+                          </Tooltip>
+                        )
+                      }
+                    >
+                      {files[activeKey][1].value.trim()}
+                    </SourceCode>
+                  ),
+              }))}
+            />
           </div>
-          <SourceCode lang={lang}>{files[activeKey][1].value}</SourceCode>
         </>
       )}
     </>

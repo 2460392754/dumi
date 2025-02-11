@@ -1,11 +1,32 @@
 import {
   BaseGenerator,
+  execa,
   fsExtra,
-  installWithNpmClient,
+  installWithNpmClient as installDeps,
   prompts,
   yParser,
 } from '@umijs/utils';
 import { join } from 'path';
+
+async function getPnpmVersion() {
+  try {
+    return (await execa.execa('pnpm', ['--version'])).stdout;
+  } catch (e) {
+    throw new Error('Please install pnpm first');
+  }
+}
+
+async function installWithNpmClient({
+  npmClient,
+  cwd,
+}: Parameters<typeof installDeps>[0]) {
+  if (npmClient === 'pnpm' && /^8\.[0-6]\./.test(await getPnpmVersion())) {
+    // to avoid pnpm 8.0 ~ 8.6 install minimal version of deps
+    await execa.execa('pnpm', ['up', '-L'], { cwd, stdio: 'inherit' });
+  } else {
+    installDeps({ npmClient, cwd });
+  }
+}
 
 export default async ({
   cwd,
@@ -26,6 +47,7 @@ export default async ({
         choices: [
           { title: 'Static Site', value: 'site' },
           { title: 'React Library', value: 'react' },
+          { title: 'Vue Library', value: 'vue' },
           { title: 'Theme Package', value: 'theme' },
         ],
         initial: 0,
@@ -54,6 +76,7 @@ export default async ({
   const descriptions = {
     site: 'A static site based on dumi',
     react: 'A react library developed with dumi',
+    vue: 'A vue library developed with dumi',
     theme: 'A theme package for dumi',
   };
   const questions: prompts.PromptObject[] = [
@@ -104,13 +127,23 @@ export default async ({
         return 'NPM package name is required';
       },
     });
+  } else if (type === 'vue') {
+    questions.unshift({
+      name: 'name',
+      type: 'text',
+      message: 'Input NPM package name',
+      validate: (value: string) => {
+        if (value && value.trim()) return true;
+        return 'NPM package name is required';
+      },
+    });
   }
 
   const generator = new BaseGenerator({
     path: join(__dirname, `../templates/${type}`),
     target,
     data: {
-      version: '^2.0.2',
+      version: process.env.DUMI_VERSION,
       npmClient,
       registry,
     },
@@ -122,5 +155,5 @@ export default async ({
     fsExtra.removeSync(join(target, './src/plugin'));
   }
   // install
-  installWithNpmClient({ npmClient, cwd: target });
+  await installWithNpmClient({ npmClient, cwd: target });
 };

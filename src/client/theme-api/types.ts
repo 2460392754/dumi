@@ -1,5 +1,5 @@
 import type { ExampleBlockAsset } from 'dumi-assets-types';
-import type { ComponentType, ReactNode } from 'react';
+import type { ComponentType as ReactComponentType, ReactNode } from 'react';
 
 export interface IPreviewerProps {
   /**
@@ -50,6 +50,10 @@ export interface IPreviewerProps {
    * react node of current demo
    */
   children: ReactNode;
+  /**
+   * private field, do not use it in your code
+   */
+  _live_in_iframe: boolean;
   [key: string]: any;
 }
 
@@ -61,7 +65,13 @@ export interface IRouteMeta {
     description?: string;
     keywords?: string[];
     // render related
-    nav?: string | { title?: string; order?: number };
+    nav?:
+      | string
+      | {
+          title?: string;
+          order?: number;
+          second?: Omit<IRouteMeta['frontmatter']['nav'], 'second'>;
+        };
     group?: string | { title?: string; order?: number };
     order?: number;
     hero?: {
@@ -85,6 +95,7 @@ export interface IRouteMeta {
     };
     atomId?: string;
     filename?: string;
+    lastUpdated?: number;
     debug?: boolean;
     /**
      * Control the display of the sidebar menu.
@@ -99,7 +110,7 @@ export interface IRouteMeta {
     depth: number;
     title: string;
     /**
-     * private field, will be removed in the future
+     * private field, do not use it in your code
      */
     _debug_demo?: boolean;
   }[];
@@ -122,9 +133,9 @@ export interface IRouteMeta {
     title?: string;
     titleIntlId?: string;
     components: {
-      default: ComponentType;
-      Extra: ComponentType;
-      Action: ComponentType;
+      default: ReactComponentType;
+      Extra: ReactComponentType;
+      Action: ReactComponentType;
     };
     meta: {
       frontmatter: Omit<
@@ -136,6 +147,10 @@ export interface IRouteMeta {
       [key: string]: any;
     };
   }[];
+  /**
+   * private field, do not use it in your code
+   */
+  _atom_route?: boolean;
 }
 
 type IBasicLocale = { id: string; name: string };
@@ -146,7 +161,7 @@ export type ILocalesConfig = ILocale[];
 
 export interface INavItem {
   title: string;
-  link: string;
+  link?: string;
   order?: number;
   activePath?: string;
   [key: string]: any;
@@ -167,6 +182,7 @@ export type SocialTypes =
   | 'github'
   | 'weibo'
   | 'twitter'
+  | 'x'
   | 'gitlab'
   | 'facebook'
   | 'zhihu'
@@ -175,7 +191,7 @@ export type SocialTypes =
 
 export type INavItems = (INavItem & { children?: INavItem[] })[];
 export type INav = INavItems | Record<string, INavItems>;
-type IUserNavItem = Pick<INavItem, 'title' | 'link'>;
+type IUserNavItem = Pick<INavItem, 'title' | 'link' | 'activePath'>;
 export type IUserNavMode = 'override' | 'append' | 'prepend';
 export type IUserNavItems = (IUserNavItem & { children?: IUserNavItem[] })[];
 export type IUserNavValue = IUserNavItems | Record<string, IUserNavItems>;
@@ -197,16 +213,21 @@ export interface IThemeConfig {
   nav?: IUserNavValue | NavWithMode<IUserNavValue>;
   sidebar?: Record<string, ISidebarGroup[]>;
   footer?: string | false;
+  showLineNum?: boolean;
   prefersColor: {
     default: 'light' | 'dark' | 'auto';
     switch: boolean;
   };
-  socialLinks: {
+  nprogress?: boolean;
+  socialLinks?: {
     /**
      * 形如：github: "https://github.com/umijs/dumi"
      */
-    [key in SocialTypes]: string;
+    [key in SocialTypes]?: string;
   };
+  editLink?: boolean | string;
+  sourceLink?: boolean | string;
+  lastUpdated?: boolean;
   [key: string]: any;
 }
 
@@ -221,3 +242,45 @@ export type IRoutesById = Record<
     [key: string]: any;
   }
 >;
+
+export type AgnosticComponentModule = { default?: any; [key: string]: any };
+
+export type AgnosticComponentType =
+  | Promise<AgnosticComponentModule>
+  | AgnosticComponentModule;
+
+export type IDemoCompileFn = (
+  code: string,
+  opts: { filename: string },
+) => Promise<string>;
+
+export type IDemoCancelableFn = (
+  canvas: HTMLElement,
+  component: AgnosticComponentModule,
+) => (() => void) | Promise<() => void>;
+
+export type IDemoPreflightFn = (
+  component: AgnosticComponentModule,
+) => Promise<void>;
+
+export type IDemoData = {
+  component: ReactComponentType | AgnosticComponentType;
+  asset: IPreviewerProps['asset'];
+  routeId: string;
+  context?: Record<string, unknown>;
+  renderOpts?: {
+    /**
+     * provide a runtime compile function for compile demo code for live preview
+     */
+    compile?: IDemoCompileFn;
+    /**
+     * Component rendering function, used to manage the creation and unmount of components
+     */
+    renderer?: IDemoCancelableFn;
+    /**
+     * Used to detect initialization errors of components in advance
+     * (if there is an error, the component will not be mounted)
+     */
+    preflight?: IDemoPreflightFn;
+  };
+};

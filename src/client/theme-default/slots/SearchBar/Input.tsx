@@ -8,7 +8,7 @@ type NativeInputProps = React.DetailedHTMLProps<
 
 type InputProps = {
   onChange: (keywords: string) => void;
-} & Pick<NativeInputProps, 'onFocus' | 'onBlur'>;
+} & Pick<NativeInputProps, 'onFocus' | 'onBlur' | 'onMouseEnter'>;
 
 export const Input = forwardRef<HTMLInputElement, InputProps>((props, ref) => {
   const intl = useIntl();
@@ -29,6 +29,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>((props, ref) => {
       }}
       onFocus={props.onFocus}
       onBlur={props.onBlur}
+      onMouseEnter={props.onMouseEnter}
       onKeyDown={(ev) => {
         if (['ArrowDown', 'ArrowUp'].includes(ev.key)) ev.preventDefault();
         // esc to blur input
@@ -36,9 +37,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>((props, ref) => {
       }}
       onChange={(ev) => {
         // wait for onCompositionEnd event be triggered
+        const value = ev.target.value;
         setTimeout(() => {
           if (!imeWaiting.current) {
-            props.onChange(ev.target.value);
+            props.onChange(value);
           }
         }, 1);
       }}

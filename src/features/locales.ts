@@ -1,3 +1,4 @@
+import { SP_ROUTE_PREFIX } from '@/constants';
 import type { IApi } from '@/types';
 import path from 'path';
 import { winPath } from 'umi/plugin-utils';
@@ -104,16 +105,36 @@ const cache = createIntlCache();
 
 const LocalesContainer: FC<{ children: ReactNode }> = (props) => {
   const getIntl = useCallback(() => {
+    const base = "${api.config.base!.replace(/\/$/, '')}"
     const matched = locales.slice().reverse().find((locale) => (
       'suffix' in locale
         // suffix mode
         ? history.location.pathname.replace(/([^/])\\/$/, '$1').endsWith(locale.suffix)
         // base mode
-        : history.location.pathname.replace(/([^/])\\/$/, '$1').startsWith(locale.base)
+        : history.location.pathname.replace(/([^/])\\/$/, '$1')
+          .startsWith(base + locale.base)
     ));
-    const locale = matched ? matched.id : locales[0].id;
+    let locale = matched ? matched.id : locales[0].id;
+    // using query on demos
+    if(history.location.pathname.startsWith(base + '/${SP_ROUTE_PREFIX}demos')){
+        const params = new URLSearchParams(history.location.search);
+        // match the locale of the query
+        if (params.get('locale')){
+          locale = params.get('locale');
+        }
+    }
+    const localeMessages = messages[locale] || {};
 
-    return createIntl({ locale, messages: messages[locale] || {} }, cache);
+    // append internal message, for use intl as string template util
+    localeMessages['$internal.edit.link'] = ${JSON.stringify(
+      api.config.themeConfig.editLink,
+    )};
+
+    localeMessages['$internal.api.sourceLink'] = ${JSON.stringify(
+      api.config.themeConfig.sourceLink,
+    )};
+
+    return createIntl({ locale, messages: localeMessages }, cache);
   }, []);
   const [intl, setIntl] = useState(() => getIntl());
 

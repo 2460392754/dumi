@@ -1,12 +1,25 @@
-import { LOCAL_PAGES_DIR, USELESS_TMP_FILES } from '@/constants';
+import {
+  LOCAL_DUMI_DIR,
+  LOCAL_PAGES_DIR,
+  LOCAL_THEME_DIR,
+  USELESS_TMP_FILES,
+} from '@/constants';
 import type { IApi } from '@/types';
 import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
-import { deepmerge, fsExtra, logger, semver, winPath } from 'umi/plugin-utils';
+import { chalk, deepmerge, fsExtra, logger, winPath } from 'umi/plugin-utils';
 
 function isMFSUAvailable(api: IApi) {
-  return process.platform !== 'win32' && api.userConfig.mfsu !== false;
+  return (
+    // maybe not working on windows
+    process.platform !== 'win32' &&
+    // allow user to disable mfsu
+    api.userConfig.mfsu !== false &&
+    // mfsu will interrupt 2-level esm for strip-ansi with unknown reason
+    // ref: https://github.com/umijs/dumi/issues/1587
+    api.pkg.type !== 'module'
+  );
 }
 
 /**
@@ -46,7 +59,6 @@ export default (api: IApi) => {
       'icons',
       'mdx',
       'mpa',
-      'monorepoRedirect',
       'reactRouter5Compat',
       'verifyCommit',
     ].forEach((key) => {
@@ -70,15 +82,17 @@ export default (api: IApi) => {
     }
 
     assert(
-      !api.config.ssr || api.config.ssr.builder === 'webpack',
-      'Only `webpack` builder is supported in SSR mode!',
+      !api.config.ssr ||
+        api.config.ssr.builder === 'webpack' ||
+        api.config.ssr.builder === 'mako',
+      'Only `webpack` and mako` builder is supported in SSR mode!',
     );
     assert(
       api.config.cssLoader?.modules === undefined &&
         api.config.cssLoaderModules === undefined,
       'CSS Modules is not supported! Because it is not suitable for UI library development, please use normal CSS, Less, etc. instead.',
     );
-    if (api.userConfig.history?.type === 'hash') {
+    if (api.userConfig.history && api.userConfig.history.type === 'hash') {
       logger.warn(
         'Hash history is temporarily incompatible, it is recommended to use browser history for now.',
       );
@@ -96,27 +110,80 @@ export default (api: IApi) => {
 
     // check tsconfig.json
     try {
-      const tsconfig = require(path.join(api.cwd, 'tsconfig.json'));
-      const expected = ['.dumi/**/*'];
+      const tsconfigPath = path.join(api.cwd, 'tsconfig.json');
+      const tsconfig: { include?: string[] } = require(tsconfigPath);
 
-      if (api.service.configManager?.mainConfigFile?.endsWith('.ts')) {
-        expected.push(
-          winPath(
-            path.relative(api.cwd, api.service.configManager.mainConfigFile),
-          ),
+      // auto remove wrong `.dumi/**/*` from previous dumi versions
+      const dotDumiWildcard = `${LOCAL_DUMI_DIR}/**/*`;
+      if (tsconfig.include?.includes(dotDumiWildcard)) {
+        tsconfig.include = tsconfig.include.filter(
+          (i) => i !== dotDumiWildcard,
+        );
+        fs.writeFileSync(
+          tsconfigPath,
+          JSON.stringify(tsconfig, null, 2),
+          'utf-8',
+        );
+        logger.info(
+          `tsconfig.json \`include\` option has been patched automatically, please check and commit it.
+          ${chalk.grey('see also: https://github.com/umijs/dumi/pull/1902')}`,
         );
       }
 
-      if (!expected.every((f) => tsconfig.include?.includes(f))) {
+      // auto add tsconfig.json for .dumi dir
+      const dotDumiPath = path.join(api.cwd, LOCAL_DUMI_DIR);
+      const dotDumiTsconfigPath = path.join(dotDumiPath, 'tsconfig.json');
+      const hasDotDumiTsFiles =
+        fs.existsSync(dotDumiPath) &&
+        fs
+          .readdirSync(dotDumiPath)
+          .some(
+            (f) =>
+              LOCAL_PAGES_DIR.endsWith(`/${f}`) ||
+              LOCAL_THEME_DIR.endsWith(`/${f}`) ||
+              /\.tsx?$/.test(f),
+          );
+      if (
+        hasDotDumiTsFiles &&
+        !fs.existsSync(dotDumiTsconfigPath) &&
+        !tsconfig.include?.some((i) => /(\.\/)?.dumi\//.test(i))
+      ) {
+        fs.writeFileSync(
+          dotDumiTsconfigPath,
+          JSON.stringify(
+            { extends: '../tsconfig.json', include: ['**/*'] },
+            null,
+            2,
+          ),
+          'utf-8',
+        );
+        logger.info(
+          'In order to make type prompt works for theme files, .dumi/tsconfig.json has been created automatically, please check and commit it.',
+        );
+      }
+
+      // check type prompt for config file
+      const configFileName =
+        api.service.configManager?.mainConfigFile &&
+        path.basename(api.service.configManager?.mainConfigFile);
+      if (
+        configFileName &&
+        // only .dumirc.ts need to be included in the root tsconfig.json, because the dot files will be excluded by default
+        /^\..+\.ts$/.test(configFileName) &&
+        !tsconfig.include?.includes(configFileName)
+      ) {
         logger.warn(
-          `Please append ${expected
-            .map((e) => `\`${e}\``)
-            .join(
-              ' & ',
-            )} into \`include\` option of \`tsconfig.json\`, to make sure the types exported by framework works.`,
+          `Please append \`${configFileName}\` into \`include\` option of tsconfig.json, to make sure the type prompt works for it.`,
         );
       }
     } catch {}
+
+    // FIXME: remove before 2.3.0
+    if ('live' in api.config) {
+      logger.warn(
+        '`live` config is deprecated and live demo is always enabled now, please remove it.',
+      );
+    }
   });
 
   // skip mfsu for client api, to avoid circular resolve in mfsu mode
@@ -128,7 +195,6 @@ export default (api: IApi) => {
 
   api.modifyDefaultConfig((memo) => {
     if (!isMFSUAvailable(api)) {
-      // FIXME: mfsu will broken on window platform for unknown reason
       memo.mfsu = false;
     } else {
       // only normal mode is supported, because src is not fixed in dumi project, eager mode may scan wrong dir
@@ -161,6 +227,9 @@ export default (api: IApi) => {
 
     // enable exportStatic by default
     memo.exportStatic ||= {};
+
+    // enable esbuildMinifyIIFE by default
+    memo.esbuildMinifyIIFE = true;
 
     return memo;
   });
@@ -198,58 +267,19 @@ export default (api: IApi) => {
       USELESS_TMP_FILES.forEach((file) => {
         fsExtra.rmSync(path.join(api.paths.absTmpPath, file), { force: true });
       });
-
-      // replace @/loading from umi.ts, because dumi use `<rootDir>/.dumi` as absSrcPath
-      const umiPath = path.join(api.paths.absTmpPath, 'umi.ts');
-      fsExtra.writeFileSync(
-        umiPath,
-        fsExtra
-          .readFileSync(umiPath, 'utf-8')
-          .replace("'@/loading'", "'../loading'"),
-      );
-
-      // replace helmet for ssr since @umi@4.0.54
-      // ref: https://github.com/umijs/umi/pull/10633
-      if (
-        api.config.ssr &&
-        semver.subset(api.appData.umi.version, '4.0.54 - 4.0.55')
-      ) {
-        const helmetPath = path.join(api.paths.absTmpPath, 'core/helmet.ts');
-        fsExtra.writeFileSync(
-          helmetPath,
-          fsExtra
-            .readFileSync(helmetPath, 'utf-8')
-            .replace(
-              /(return )(React\.createElement)/,
-              "$1typeof window === 'undefined' ? container : $2",
-            ),
-        );
-      }
     },
   });
 
   // built-in other umi plugins (such as analytics)
   api.registerPlugins([require.resolve('../../compiled/@umijs/plugins')]);
 
-  // FIXME: skip prepare plugin since umi@4.0.48, because it is not compatible with dumi currently
-  if (api.isPluginEnable('prepare')) api.skipPlugins(['prepare']);
-
-  // skip routeProps plugin since umi@4.0.53
-  // because dumi support conventional route props by default and it will cause ssr failed
-  if (api.isPluginEnable('routeProps')) {
-    api.skipPlugins(['routeProps']);
-
-    // FIXME: write a empty routeProps file to avoid umi throw error, should be removed after umi fixed
-    api.onGenerateFiles({
-      // make sure before umi generate files
-      stage: -Infinity,
-      fn() {
-        api.writeTmpFile({
-          noPluginDir: true,
-          path: 'core/routeProps.js',
-          content: 'export default {}',
-        });
-      },
-    });
-  }
+  // skip useless umi built-in plugins
+  [
+    // skip prepare plugin since umi@4.0.48, because it is not compatible with dumi currently
+    'prepare',
+    // skip routeProps plugin since umi@4.0.53, because dumi support conventional route props by default
+    'routeProps',
+  ].forEach((plugin) => {
+    if (api.isPluginEnable(plugin)) api.skipPlugins([plugin]);
+  });
 };

@@ -1,16 +1,56 @@
-import type AtomAssetsParser from '@/assetParsers/atom';
 import type { IApi } from '@/types';
+import { lodash } from '@umijs/utils';
 import assert from 'assert';
+import {
+  BaseAtomAssetsParser,
+  type IAtomAssetsParser,
+} from '../assetParsers/BaseParser';
 import { ATOMS_META_PATH } from './meta';
 
+type IParsedAtomAssets = Awaited<ReturnType<IAtomAssetsParser['parse']>>;
+
+function filterIgnoredProps(
+  props: IParsedAtomAssets['components'][string]['propsConfig']['properties'],
+) {
+  return lodash.pickBy(props, (prop) => {
+    let isHidden = false;
+
+    if (prop.type === 'array' && 'items' in prop) {
+      prop.items = filterIgnoredProps({ _: prop.items! })._;
+    } else if (prop.type === 'object' && 'properties' in prop) {
+      prop.properties = filterIgnoredProps(prop.properties!);
+    } else if (prop.oneOf) {
+      // oneOf may be [null] with unknown reason
+      prop.oneOf = prop.oneOf
+        .filter(Boolean)
+        .map((item) => filterIgnoredProps({ _: item })._);
+    } else if (prop.allOf) {
+      // allOf may be [null] with unknown reason
+      prop.allOf = prop.allOf
+        .filter(Boolean)
+        .map((item) => filterIgnoredProps({ _: item })._);
+    } else if ('hidden' in prop) {
+      isHidden = true;
+    }
+
+    return !isHidden;
+  });
+}
+
 export default (api: IApi) => {
-  let prevData: Awaited<ReturnType<AtomAssetsParser['parse']>>;
+  let prevData: IParsedAtomAssets;
   const writeAtomsMetaFile = (data: typeof prevData) => {
+    // filter ignored properties
+    const components = lodash.mapValues(data.components, (component) => ({
+      ...component,
+      propsConfig: filterIgnoredProps({ _: component.propsConfig })._,
+    }));
+
     api.writeTmpFile({
       noPluginDir: true,
       path: ATOMS_META_PATH,
       content: `export const components = ${JSON.stringify(
-        data.components,
+        components,
         null,
         2,
       )};`,
@@ -46,16 +86,22 @@ export default (api: IApi) => {
   // because `onStart` will be called before any commands
   // and `onCheckPkgJson` only be called in dev and build
   api.onCheckPkgJSON(async () => {
+    if (api.service.atomParser instanceof BaseAtomAssetsParser) return;
     const {
-      default: AtomAssetsParser,
+      default: ReactAtomAssetsParser,
     }: typeof import('@/assetParsers/atom') = require('@/assetParsers/atom');
 
-    api.service.atomParser = new AtomAssetsParser({
+    const apiParser = api.config.apiParser as Exclude<
+      IApi['config']['apiParser'],
+      false | undefined
+    >;
+
+    api.service.atomParser = new ReactAtomAssetsParser({
       entryFile: api.config.resolve.entryFile!,
       resolveDir: api.cwd,
-      unpkgHost: api.config.apiParser!.unpkgHost,
-      resolveFilter: api.config.apiParser!.resolveFilter,
-      parseOptions: api.config.apiParser!.parseOptions,
+      unpkgHost: apiParser.unpkgHost,
+      resolveFilter: apiParser.resolveFilter,
+      parseOptions: apiParser.parseOptions,
     });
   });
 

@@ -1,6 +1,6 @@
 ---
 group: 其他
-order: 2
+order: 3
 ---
 
 # 常见问题
@@ -34,7 +34,7 @@ yarn add dumi cross-env -D
   },
 ```
 
-3. 增加配置，新建 `.dumirc`。
+3. 增加配置，新建 `.dumirc.js|ts` 到 `APP_ROOT` 指定的根目录中。dumi 会根据 `APP_ROOT` 来消费配置文件，如果不指定 `APP_ROOT`，则在项目根目录创建即可。
 
 ```js
 export default {
@@ -49,13 +49,13 @@ export default {
 5. 新建文档 `dumi/docs/index.md`。
 
 ```markdown
-# 这是一个 Dumi 结合 create-react-app 的 Demo
+# 这是一个 dumi 结合 create-react-app 的 Demo
 ```
 
 6. 将 dumi 的临时文件添加到 `.gitignore` 中。
 
 ```text
-.dumi
+.dumi/tmp*
 ```
 
 ## dumi 支持基于其他技术框架、例如 Vue、Angular 编写文档和 Demo 吗？
@@ -74,7 +74,7 @@ export default {
 
 ```ts
 export default {
-  base: '/文档起始路由',
+  base: '/文档起始路由/',
   publicPath: '/静态资源起始路径/',
   // 其他配置
 };
@@ -104,6 +104,8 @@ yarn add gh-pages -D
 }
 ```
 
+> 同样的，如果是 react 文档，使用 `gh-pages -d docs-dist`命令即可。
+
 编译生成 `dist` 目录
 
 ```bash
@@ -122,7 +124,7 @@ npm run deploy
 
 #### 自动部署
 
-利用 [Github Action](https://github.com/features/actions) 在每次 `master` 分支更新后自动部署
+利用 [Github Action](https://github.com/features/actions) 在每次 `main` 分支更新后自动部署
 
 新建 `.github/workflows/gh-pages.yml` 文件
 
@@ -132,16 +134,22 @@ name: github pages
 on:
   push:
     branches:
-      - master # default branch
+      - main # default branch
 
 jobs:
   deploy:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - run: npm install
-      # 文档编译命令，如果是 react 模板需要修改为 npm run docs:build
-      - run: npm run build
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          # 如果配置 themeConfig.lastUpdated 为 false，则不需要添加该参数以加快检出速度
+          fetch-depth: 0
+      - name: Install dependencies
+        run: npm install
+      - name: Build with dumi
+        # 文档编译命令，如果是 react 模板需要修改为 npm run docs:build
+        run: npm run build
       - name: Deploy
         uses: peaceiris/actions-gh-pages@v3
         with:
@@ -149,6 +157,8 @@ jobs:
           # 文档目录，如果是 react 模板需要修改为 docs-dist
           publish_dir: ./dist
 ```
+
+> 如果 actions 部署时遇到 403 错误，可以尝试使用 [Deploy Token](https://github.com/peaceiris/actions-gh-pages#%EF%B8%8F-set-ssh-private-key-deploy_key)
 
 ## dumi 如何支持对 Swift、C#、Kotlin 等语言的语法高亮？
 
@@ -204,3 +214,18 @@ import './index.css';
 ```
 
 这样无论是 dumi 还是实际项目里，都不需要做额外配置，但这种做法也有一些限制：如果引入的是 `.less`，那么目标项目的开发框架必须支持编译 Less。
+
+## 是否支持三级导航？
+
+不支持。如果文档目录结构的复杂度超过 3 级，应该考虑优化文档整体结构而非使用三级导航。如果有特殊场景需要，可以自定义主题实现。
+
+## 为什么 live demo 和 babel-plugin-import 无法一起使用？
+
+live demo 需要的正是全量引入，和 babel-plugin-import 的工作逻辑有冲突。
+
+解决方案:
+
+- 不需要 live demo：忽略警告即可
+- 希望开启 live demo：
+  - 如果不需要插件自动注入组件`css`, 即配置了 `options: {"libraryName": "antd", "style": false}`: 直接去掉插件即可
+  - 否则借助 .dumi/global.css 加载组件样式，可以参考 [and ssr 静态样式导出](https://ant.design/docs/blog/extract-ssr-cn#static-extract-style) 提取 `css` 文件。

@@ -1,6 +1,6 @@
 import parseBlockAsset from '@/assetParsers/block';
 import type { IDumiDemoProps } from '@/client/theme-api/DumiDemo';
-import { getRoutePathFromFsPath } from '@/utils';
+import { getFileIdFromFsPath } from '@/utils';
 import type { sync } from 'enhanced-resolve';
 import type { Element, Root } from 'hast';
 import path from 'path';
@@ -11,6 +11,7 @@ import type { IMdTransformerOptions } from '.';
 
 let visit: typeof import('unist-util-visit').visit;
 let SKIP: typeof import('unist-util-visit').SKIP;
+let EXIT: typeof import('unist-util-visit').EXIT;
 let toString: typeof import('hast-util-to-string').toString;
 let isElement: typeof import('hast-util-is-element').isElement;
 const DEMO_NODE_CONTAINER = '$demo-container';
@@ -18,10 +19,17 @@ const DEMO_NODE_CONTAINER = '$demo-container';
 export const DEMO_PROP_VALUE_KEY = '$demo-prop-value-key';
 export const DUMI_DEMO_TAG = 'DumiDemo';
 export const DUMI_DEMO_GRID_TAG = 'DumiDemoGrid';
+export const SKIP_DEMO_PARSE = 'pure';
+const ALWAYS_DEMO_PARSE = 'demo';
+
+const skipDemoRE = new RegExp(/** 注意前面有空格 ==> */ ` ${SKIP_DEMO_PARSE}`);
+const alwaysDemoRE = new RegExp(
+  /** 注意前面有空格 ==> */ ` ${ALWAYS_DEMO_PARSE}`,
+);
 
 // workaround to import pure esm module
 (async () => {
-  ({ visit, SKIP } = await import('unist-util-visit'));
+  ({ visit, SKIP, EXIT } = await import('unist-util-visit'));
   ({ toString } = await import('hast-util-to-string'));
   ({ isElement } = await import('hast-util-is-element'));
 })();
@@ -29,7 +37,11 @@ export const DUMI_DEMO_GRID_TAG = 'DumiDemoGrid';
 type IRehypeDemoOptions = Pick<
   IMdTransformerOptions,
   'techStacks' | 'cwd' | 'fileAbsPath' | 'resolve'
-> & { resolver: typeof sync };
+> & {
+  resolver: typeof sync;
+  fileLocaleLessPath: string;
+  fileLocale?: string;
+};
 
 /**
  * get language for code element
@@ -45,16 +57,22 @@ function getCodeLang(node: Element, opts: IRehypeDemoOptions) {
     ) as string;
     lang = path.extname(node.properties.src).slice(1);
   } else if (
-    Array.isArray(node.properties?.className) &&
-    (opts.resolve.codeBlockMode === 'passive'
-      ? // passive mode
-        / demo/.test(String(node.data?.meta))
-      : // active mode (default)
-        !/ pure/.test(String(node.data?.meta)))
+    [
+      // 插件开发者可配置 [SKIP_DEMO_PARSE_SIGN] 表示不解析 demo (优先级最高)
+      !Object.prototype.hasOwnProperty.call(node.data ?? {}, SKIP_DEMO_PARSE),
+      Array.isArray(node.properties?.className),
+      // 根据用户配置判断 pure 或者 demo
+      opts.resolve.codeBlockMode === 'passive'
+        ? alwaysDemoRE.test(String(node.data?.meta)) // passive mode
+        : !skipDemoRE.test(String(node.data?.meta)), // active mode (default)
+    ].every(Boolean)
   ) {
     // code block demo
     // ref: https://github.com/syntax-tree/mdast-util-to-hast/blob/b7623785f270b5225898d15327770327409878f8/lib/handlers/code.js#L23
-    lang = String(node.properties!.className[0]).replace('language-', '');
+    lang = String((node.properties!.className as any[])[0]).replace(
+      'language-',
+      '',
+    );
   }
 
   return lang;
@@ -70,9 +88,7 @@ function getCodeId(
   atomId?: string,
 ) {
   // Foo, or docs-guide, or docs-guide-faq
-  const prefix =
-    atomId ||
-    getRoutePathFromFsPath(path.relative(cwd, fileAbsPath)).replace(/\//g, '-');
+  const prefix = atomId || getFileIdFromFsPath(path.relative(cwd, fileAbsPath));
 
   return [prefix.toLowerCase(), 'demo', localId.toLowerCase()]
     .filter(Boolean)
@@ -190,13 +206,48 @@ export default function rehypeDemo(
       }
     });
 
+    // find all demo nodes, and check whether there is `only` mark
+    let hasOnlySign = false;
+    let hasSkipSign = false;
+    visit<Root, 'element'>(tree, 'element', (node) => {
+      if (isElement(node, 'p') && node.data?.[DEMO_NODE_CONTAINER]) {
+        for (const codeNode of node.children) {
+          if (isElement(codeNode, 'code')) {
+            hasSkipSign ||= 'skip' in codeNode.properties!;
+
+            if ('only' in codeNode.properties!) {
+              hasOnlySign = true;
+              return EXIT;
+            }
+          }
+        }
+      }
+    });
+
+    if (process.env.NODE_ENV === 'production' && (hasOnlySign || hasSkipSign)) {
+      logger.warn(
+        `The 'only' or 'skip' mark is not supported in production environment, please remove it. at ${
+          vFile.data.frontmatter!.filename
+        }`,
+      );
+    }
+
     visit<Root, 'element'>(tree, 'element', (node) => {
       if (isElement(node, 'p') && node.data?.[DEMO_NODE_CONTAINER]) {
         const demosPropData: IDumiDemoProps[] = [];
-
-        node.children.forEach((codeNode) => {
+        for (const codeNode of node.children) {
           // strip invalid br elements
           if (isElement(codeNode, 'code')) {
+            // check whether to skip this demo
+            const shouldSkipNonOnlyDemos =
+              hasOnlySign && !('only' in codeNode.properties!);
+            if (
+              process.env.NODE_ENV !== 'production' &&
+              ('skip' in codeNode.properties! || shouldSkipNonOnlyDemos)
+            ) {
+              continue;
+            }
+
             const codeType = codeNode.data!.type as Parameters<
               IRehypeDemoOptions['techStacks'][0]['transformCode']
             >[1]['type'];
@@ -209,9 +260,15 @@ export default function rehypeDemo(
                 ? [vFile.data.frontmatter!.atomId]
                 : [],
               fileAbsPath: '',
+              lang: codeNode.data!.lang,
+              fileLocale: opts.fileLocale,
               entryPointCode: codeType === 'external' ? undefined : codeValue,
               resolver: opts.resolver,
+              techStack,
             };
+
+            const runtimeOpts = techStack.runtimeOpts;
+
             const previewerProps: IDumiDemoProps['previewerProps'] = {};
             let component = '';
 
@@ -233,13 +290,20 @@ export default function rehypeDemo(
 
               parseOpts.id = getCodeId(
                 opts.cwd,
-                opts.fileAbsPath,
+                opts.fileLocaleLessPath,
                 localId,
                 vFile.data.frontmatter!.atomId,
               );
-              component = `React.lazy(() => import( /* webpackChunkName: "${chunkName}" */ '${winPath(
+              const importChunk = `import( /* webpackChunkName: "${chunkName}" */ '${winPath(
                 parseOpts.fileAbsPath,
-              )}?techStack=${techStack.name}'))`;
+              )}?techStack=${techStack.name}')`;
+
+              if (runtimeOpts?.rendererPath) {
+                component = `(async () => ${importChunk})()`;
+              } else {
+                component = `React.memo(React.lazy(() => ${importChunk}))`;
+              }
+
               // use code value as title
               // TODO: force checking
               if (codeValue) codeNode.properties!.title = codeValue;
@@ -247,13 +311,20 @@ export default function rehypeDemo(
                 path.relative(opts.cwd, parseOpts.fileAbsPath),
               );
             } else {
+              const localId = [opts.fileLocale, String(index++)]
+                .filter(Boolean)
+                .join('-');
+
               // pass a fake entry point for code block demo
               // and pass the real code via `entryPointCode` option
-              parseOpts.fileAbsPath = opts.fileAbsPath.replace('.md', '.tsx');
+              parseOpts.fileAbsPath = opts.fileAbsPath.replace(
+                '.md',
+                `.${parseOpts.lang}`,
+              );
               parseOpts.id = getCodeId(
                 opts.cwd,
-                opts.fileAbsPath,
-                String(index++),
+                opts.fileLocaleLessPath,
+                localId,
                 vFile.data.frontmatter!.atomId,
               );
               component = techStack.transformCode(codeValue, {
@@ -268,7 +339,7 @@ export default function rehypeDemo(
             // generate asset data for demo
             deferrers.push(
               parseBlockAsset(parseOpts).then(
-                async ({ asset, sources, frontmatter }) => {
+                async ({ asset, resolveMap, frontmatter }) => {
                   // repeat id to give warning
                   if (
                     demoIds.indexOf(parseOpts.id) !==
@@ -330,6 +401,10 @@ export default function rehypeDemo(
                       // TODO: special id for inline demo
                       id: asset.id,
                       component,
+                      renderOpts: {
+                        rendererPath: runtimeOpts?.rendererPath,
+                        preflightPath: runtimeOpts?.preflightPath,
+                      },
                     };
                   }
 
@@ -377,9 +452,20 @@ export default function rehypeDemo(
                     asset: techStack.generateMetadata
                       ? await techStack.generateMetadata(asset, techStackOpts)
                       : asset,
-                    sources: techStack.generateSources
-                      ? await techStack.generateSources(sources, techStackOpts)
-                      : sources,
+                    /**
+                     * keep `generateSources` rather than `generateResolveMap` for compatibility
+                     */
+                    resolveMap: techStack.generateSources
+                      ? await techStack.generateSources(
+                          resolveMap,
+                          techStackOpts,
+                        )
+                      : resolveMap,
+                    renderOpts: {
+                      rendererPath: runtimeOpts?.rendererPath,
+                      compilePath: runtimeOpts?.compilePath,
+                      preflightPath: runtimeOpts?.preflightPath,
+                    },
                   };
                 },
               ),
@@ -390,8 +476,16 @@ export default function rehypeDemo(
               demo: propDemo,
               previewerProps,
             });
+
+            // only process demos with the first occurrence of `only` mark
+            if (
+              process.env.NODE_ENV !== 'production' &&
+              'only' in codeNode.properties!
+            ) {
+              break;
+            }
           }
-        });
+        }
 
         // replace original node, and save it for parse the final real jsx attributes after all deferrers resolved
         // because the final `previewerProps` depends on the async parse result from `parseBlockAsset`

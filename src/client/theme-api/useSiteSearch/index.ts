@@ -1,8 +1,6 @@
-import { useNavData, useSiteData } from 'dumi';
+import { useNavData } from 'dumi';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useLocaleDocRoutes } from '../utils';
-// @ts-ignore
-import workerCode from '-!../../../../compiled/_internal/searchWorker.min?dumi-raw';
+import useSearchData from './useSearchData';
 
 export interface IHighlightText {
   highlighted?: boolean;
@@ -16,6 +14,7 @@ export interface ISearchNavResult {
     type: 'page' | 'title' | 'demo' | 'content';
     link: string;
     priority: number;
+    pageTitle: string;
     highlightTitleTexts: IHighlightText[];
     highlightTexts: IHighlightText[];
   }[];
@@ -30,23 +29,26 @@ if (typeof window !== 'undefined') {
   // use blob to avoid generate entry(chunk) for worker
   worker = new Worker(
     URL.createObjectURL(
-      new Blob([workerCode], { type: 'application/javascript' }),
+      // @ts-ignore
+      new Blob([SEARCH_WORKER_CODE], { type: 'application/javascript' }),
     ),
   );
 }
 
 export const useSiteSearch = () => {
   const debounceTimer = useRef<number>();
-  const routes = useLocaleDocRoutes();
-  const { demos } = useSiteData();
   const [loading, setLoading] = useState(false);
   const [keywords, setKeywords] = useState('');
   const navData = useNavData();
   const [result, setResult] = useState<ISearchResult>([]);
+  const [data, load] = useSearchData();
   const setter = useCallback((val: string) => {
+    load();
     setLoading(true);
     setKeywords(val);
   }, []);
+  const routes = data?.[0];
+  const demos = data?.[1];
 
   useEffect(() => {
     worker.onmessage = (e) => {
@@ -56,28 +58,21 @@ export const useSiteSearch = () => {
   }, []);
 
   useEffect(() => {
-    // omit demo component for postmessage
-    const demoData = Object.entries(demos).reduce<
-      Record<string, Partial<typeof demos[0]>>
-    >(
-      (acc, [key, { asset, routeId }]) => ({
-        ...acc,
-        [key]: { asset, routeId },
-      }),
-      {},
-    );
+    if (!routes || !demos) return;
 
     worker.postMessage({
       action: 'generate-metadata',
       args: {
         routes: JSON.parse(JSON.stringify(routes)),
         nav: navData,
-        demos: demoData,
+        demos: demos,
       },
     });
   }, [routes, demos, navData]);
 
   useEffect(() => {
+    if (!routes) return;
+
     const str = keywords.trim();
 
     if (str) {
@@ -93,7 +88,13 @@ export const useSiteSearch = () => {
     } else {
       setResult([]);
     }
-  }, [keywords]);
+  }, [keywords, routes]);
 
-  return { keywords, setKeywords: setter, result, loading };
+  return {
+    keywords,
+    setKeywords: setter,
+    result,
+    loading,
+    load,
+  };
 };
